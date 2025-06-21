@@ -23,10 +23,19 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 checkpoint_saver = InMemorySaver()
 
-# Create Agent react
+# Implementing tools(Tavily)
+from langchain_tavily import TavilySearch
+
+search = TavilySearch(max_results=5, topic="general")
+
+
+
+# Create Agent react and tools
 from langgraph.prebuilt import create_react_agent
 
-agent = create_react_agent(model=llm, tools=[], checkpointer=checkpoint_saver)
+tools = [search]
+
+agent = create_react_agent(model=llm, tools=tools, checkpointer=checkpoint_saver)
 
 # BaseModel
 from pydantic import BaseModel
