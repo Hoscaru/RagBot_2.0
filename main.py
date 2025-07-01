@@ -32,10 +32,13 @@ search = TavilySearch(max_results=5, topic="general")
 
 # Create Agent react and tools
 from langgraph.prebuilt import create_react_agent
+from langchain_core.prompts import ChatPromptTemplate
 
 tools = [search]
 
-agent = create_react_agent(model=llm, tools=tools, checkpointer=checkpoint_saver)
+agent = create_react_agent(model=llm,
+                        tools=tools,
+                        checkpointer=checkpoint_saver,)
 
 # Embeddings
 from langchain_cohere import CohereEmbeddings
@@ -50,20 +53,62 @@ vector_store = Chroma(embedding_function=embeddings, persist_directory="vector_s
 from pydantic import BaseModel
 
 class LLMRequest(BaseModel):
-    promt: str
+    prompt: str
     id: int
 
 # LLM Endpoint
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-
+from fastapi import HTTPException
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
 @app.post("/llm")
-async def llm_endpoint(request: LLMRequest):
-    config = {"configurable": {"thread_id": request.id}}
-    user_prompt = HumanMessage(content=request.promt)
-    response = agent.invoke({"messages":user_prompt}, config=config)
-    return {"response": response["messages"][-1].content}
 
+async def llm_endpoint(request: LLMRequest):
+    try:
+        # Primero verificamos si hay información relevante en el vector store
+        retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+        relevant_docs = retriever.get_relevant_documents(request.prompt)
+        
+        # Construimos el contexto a partir de los documentos recuperados
+        context = "\n\n".join([doc.page_content for doc in relevant_docs])
+        
+        # Creamos un prompt que combine el RAG con las capacidades del agente
+        rag_prompt = ChatPromptTemplate.from_messages([
+                ("system", """Eres un asistente útil que combina información recuperada con conocimiento general. 
+                Utiliza la siguiente información de contexto para responder a la pregunta del usuario.
+                Si no sabes la respuesta o la información del contexto no es relevante, usa tus herramientas para buscar información.
+                
+                Contexto: {context}"""),
+                ("human", "{question}")
+            ])
+        
+        # Configuramos la cadena RAG
+        rag_chain = (
+            {"context": retriever, "question": RunnablePassthrough()} 
+            | rag_prompt 
+            | llm
+            | StrOutputParser()
+        )
+        
+        # Determinamos si usar RAG o el agente con herramientas
+        if relevant_docs:
+            # Usamos RAG si encontramos documentos relevantes
+            response = rag_chain.invoke(request.prompt)
+        else:
+            # Usamos el agente con herramientas si no hay documentos relevantes
+            response = agent.invoke({"messages": [HumanMessage(content=request.prompt)]})
+        
+        return {
+            "response": response,
+            "id": request.id,
+            "relevant_docs_found": len(relevant_docs) > 0,
+            "num_relevant_docs": len(relevant_docs)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 from fastapi import UploadFile, File
 import tempfile
