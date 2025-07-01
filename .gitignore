@@ -1,3 +1,4 @@
 /.env
 ragbot-venv
 __pycache__
+/vector_store
